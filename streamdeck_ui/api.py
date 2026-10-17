@@ -6,9 +6,10 @@ from functools import partial
 from typing import Dict, List, Optional, Tuple, Union, cast
 
 from PIL.ImageQt import ImageQt
-from PySide2.QtCore import QObject, Signal
-from PySide2.QtGui import QImage, QPixmap
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QImage, QPixmap
 from StreamDeck.Devices import StreamDeck
+from StreamDeck.Transport.Transport import TransportError
 
 from streamdeck_ui.config import CONFIG_FILE_VERSION, DEFAULT_FONT, STATE_FILE
 from streamdeck_ui.dimmer import Dimmer
@@ -27,8 +28,8 @@ class KeySignalEmitter(QObject):
 class StreamDeckSignalEmitter(QObject):
     attached = Signal(dict)
     "A signal that is raised whenever a new StreamDeck is attached."
-    detatched = Signal(str)
-    "A signal that is raised whenever a StreamDeck is detatched. "
+    detached = Signal(str)
+    "A signal that is raised whenever a StreamDeck is detached. "
     cpu_changed = Signal(str, int)
 
 
@@ -38,7 +39,6 @@ class StreamDeckServer:
     """
 
     def __init__(self) -> None:
-
         self.decks: Dict[str, StreamDeck.StreamDeck] = {}
         "Lookup with serial number -> StreamDeck"
 
@@ -68,7 +68,7 @@ class StreamDeckServer:
         "Use the connect method on the key_pressed signal to subscribe"
 
         self.plugevents = StreamDeckSignalEmitter()
-        "Use the connect method on the attached and detatched methods to subscribe"
+        "Use the connect method on the attached and detached methods to subscribe"
 
         self.monitor: Optional[StreamDeckMonitor] = None
         "Monitors for Stream Deck(s) attached to the computer"
@@ -83,13 +83,15 @@ class StreamDeckServer:
 
     def reset_dimmer(self, serial_number: str) -> bool:
         """Resets the dimmer for the given Stream Deck. This means the display
-        will not be dimmed and the timer starts.
+        will not be dimmed and the timer starts. Reloads configuration.
 
         Args:
             serial_number (str): The Stream Deck serial number
         Returns:
             bool: Returns True if the dimmer had to be reset (i.e. woken up), False otherwise.
         """
+        self.dimmers[serial_number].brightness = self.get_brightness(serial_number)
+        self.dimmers[serial_number].brightness_dimmed = self.get_brightness_dimmed(serial_number)
         return self.dimmers[serial_number].reset()
 
     def toggle_dimmers(self):
@@ -145,7 +147,6 @@ class StreamDeckServer:
         self.export_config(STATE_FILE)
 
     def open_config(self, config_file: str):
-
         with open(config_file) as state_file:
             config = json.loads(state_file.read())
             file_version = config.get("streamdeck_ui_version", 0)
@@ -179,7 +180,7 @@ class StreamDeckServer:
         serial_number = streamdeck.get_serial_number()
 
         # Store mapping from device id -> serial number
-        # The detatched event only knows about the id that got detatched
+        # The detached event only knows about the id that got detached
         self.deck_ids[streamdeck_id] = serial_number
         self.decks[serial_number] = streamdeck
         self.initialize_state(serial_number, streamdeck.key_count())
@@ -209,11 +210,11 @@ class StreamDeckServer:
             for button in range(buttons):
                 self._button_state(serial_number, page, button)
 
-    def detatched(self, id: str):
+    def detached(self, id: str):
         serial_number = self.deck_ids.get(id, None)
         if serial_number:
             self.cleanup(id, serial_number)
-            self.plugevents.detatched.emit(serial_number)
+            self.plugevents.detached.emit(serial_number)
 
     def cleanup(self, id: str, serial_number: str):
         display_grid = self.display_handlers[serial_number]
@@ -230,8 +231,7 @@ class StreamDeckServer:
                 streamdeck.set_brightness(50)
                 streamdeck.reset()
                 streamdeck.close()
-        except Exception as error:
-            print(f"Error during detatch: {error}")
+        except TransportError:
             pass
 
         del self.decks[serial_number]
@@ -239,7 +239,7 @@ class StreamDeckServer:
 
     def start(self):
         if not self.monitor:
-            self.monitor = StreamDeckMonitor(self.lock, self.attached, self.detatched)
+            self.monitor = StreamDeckMonitor(self.lock, self.attached, self.detached)
         self.monitor.start()
 
     def stop(self):
@@ -345,7 +345,7 @@ class StreamDeckServer:
         pil_image = self.display_handlers[deck_id].get_image(page, button)
         if pil_image:
             qt_image = ImageQt(pil_image)
-            qt_image = qt_image.convertToFormat(QImage.Format_ARGB32)
+            qt_image = qt_image.convertToFormat(QImage.Format.Format_ARGB32)
             return QPixmap(qt_image)
         return None
 
@@ -456,7 +456,6 @@ class StreamDeckServer:
         """
 
         for deck_id, deck_state in self.state.items():
-
             deck = self.decks.get(deck_id, None)
 
             # Deck is not attached right now

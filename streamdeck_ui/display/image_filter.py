@@ -1,4 +1,5 @@
 import itertools
+import os
 from fractions import Fraction
 from io import BytesIO
 from typing import Callable, Tuple
@@ -17,7 +18,7 @@ class ImageFilter(Filter):
 
     def __init__(self, file: str):
         super(ImageFilter, self).__init__()
-        self.file = file
+        self.file = os.path.expanduser(file)
 
     def initialize(self, size: Tuple[int, int]):
         # Each frame needs to have a unique hashcode. Start with file name as baseline.
@@ -55,7 +56,7 @@ class ImageFilter(Filter):
                         frame_hash.append(image_hash)
                         break
 
-        except (OSError, IOError) as icon_error:
+        except OSError as icon_error:
             # FIXME: caller should handle this?
             print(f"Unable to load icon {self.file} with error {icon_error}")
             image = Image.new("RGB", size)

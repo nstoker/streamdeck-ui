@@ -1,22 +1,48 @@
-Install the latest
-===================
+# Upgrade
 
-To install the latest version of streamdeck_ui simply run:
+To upgrade to the latest version, run:
 
-`pip3 install streamdeck_ui`
+```
+python -m pip install streamdeck-ui --user --upgrade
+```
 
-OR
+> Note you may have to use `python3`, `python3.8` etc. depending on your operating system and Python version.
 
-`poetry add streamdeck_ui`
+# Change log
+## 2.0.16 - TBD
+## Features
+- Added ~ path expansion for icons.
+## Fixes
+- Fix error when pressing Streamdeck Pedal.
+## 2.0.15 - 8 March 2023
+### Features
+- Added support for Stream Deck Pedal.
 
-OR
+## 2.0.14 - 4 Mar 2023
+### Features
+- Ensure only one instance can run (prevents settings file corruption).
+- Press `Ctrl+c` in terminal to quit.
+- Supports systemd install and added documentation.
 
-`pipenv install streamdeck_ui`
-
-
-Change log
-==========
-## 2.0.4 - TBD
+## 2.0.13 - 27 Feb 2023
+### Fixes
+- Requirement for Python < 3.11 removed.
+- Switched to pyside6.
+### Features
+- Added support for a new sub-variant of the StreamDeck XL.
+- Allow Stream Deck UI to start, even if virtual keyboard won't work.
+- Improved troubleshooting messages.
+- Updated documentation and installation guides.
+## 2.0.6 - 23 Sep 2022
+### Fixes
+- Image drag/drop from external applications.
+- Dimmer not working properly.
+## 2.0.5 - 18 Sep 2022
+### Features
+- Support for new Stream Deck Mini.
+### Fixes
+- Fix install under Fedora 36 (pillow dependency version bump).
+## 2.0.4 - 29 Apr 2022
 ### Features
 - Recover from a suspend/resume cycle.
 

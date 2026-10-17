@@ -16,6 +16,8 @@ _________________
 [Release notes](CHANGELOG.md) 
 _________________
 
+> WARNUNG: Diese Dokumentation ist veraltet und möglicherweise nicht korrekt.
+
 **streamdeck_ui** Ein Linux kompatibles UserInterface für das Elgato Stream Deck.
 
 ![Streamdeck UI Usage Example](art/example.gif)
@@ -60,11 +62,7 @@ sudo nano /etc/udev/rules.d/70-streamdeck.rules
 ```
 Fügen sie die folgenden Zeilen ein:
 ``` console
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0060", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0063", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="006c", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="006d", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0080", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
 ```
 Aktivieren sie die Regeln:
 ``` console
@@ -101,8 +99,12 @@ streamdeck
 ```
 
 Beachten sie auch die Anleitungen für
-* [CentOS 7](docs/centos.md)
-* [Ubuntu 18.04](docs/ubuntu1804.md)
+
+* [Arch/Manjaro](docs/installation/arch.md)
+* [CentOS](docs/installation/centos.md)
+* [Fedora](docs/installation/fedora.md)
+* [openSUSE](docs/installation/opensuse.md)
+* [Ubuntu/Mint](docs/installation/ubuntu.md)
 
 ## Hilfe
 ### Befehl (Command)

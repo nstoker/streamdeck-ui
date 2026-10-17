@@ -1,6 +1,7 @@
 """Defines the QT powered interface for configuring Stream Decks"""
 import os
 import shlex
+import signal
 import sys
 import time
 from functools import partial
@@ -8,17 +9,33 @@ from subprocess import Popen  # nosec - Need to allow users to specify arbitrary
 from typing import Dict, Optional
 
 import pkg_resources
-from pynput import keyboard
-from pynput.keyboard import Controller, Key
-from PySide2 import QtWidgets
-from PySide2.QtCore import QMimeData, QSignalBlocker, QSize, Qt, QTimer, QUrl
-from PySide2.QtGui import QDesktopServices, QDrag, QIcon
-from PySide2.QtWidgets import QAction, QApplication, QDialog, QFileDialog, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSystemTrayIcon
+from PySide6 import QtWidgets
+from PySide6.QtCore import QMimeData, QSignalBlocker, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QDrag, QIcon
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSystemTrayIcon
 
 from streamdeck_ui.api import StreamDeckServer
 from streamdeck_ui.config import LOGO, STATE_FILE
+from streamdeck_ui.semaphore import Semaphore, SemaphoreAcquireError
 from streamdeck_ui.ui_main import Ui_MainWindow
 from streamdeck_ui.ui_settings import Ui_SettingsDialog
+
+pnput_supported: bool = True
+try:
+    from pynput import keyboard
+    from pynput.keyboard import Controller, Key
+except ImportError as pynput_error:
+    pnput_supported = False
+    print("---------------")
+    print("*** Warning ***")
+    print("---------------")
+    print("Virtual keyboard functionality has been disabled.")
+    print("You can still run Stream Deck UI, however you will not be able to emulate key presses or text typing.")
+    print("The most likely reason you are seeing this message is because you don't have an X server running")
+    print("and your operating system uses Wayland.")
+    print("")
+    print(f"For troubleshooting purposes, the actual error is: \n{pynput_error}")
+
 
 api: StreamDeckServer
 
@@ -67,7 +84,6 @@ class DraggableButton(QtWidgets.QToolButton):
         self.api = api
 
     def mouseMoveEvent(self, e):  # noqa: N802 - Part of QT signature.
-
         if e.buttons() != Qt.LeftButton:
             return
 
@@ -76,7 +92,7 @@ class DraggableButton(QtWidgets.QToolButton):
         mimedata = QMimeData()
         drag = QDrag(self)
         drag.setMimeData(mimedata)
-        drag.exec_(Qt.MoveAction)
+        drag.exec(Qt.MoveAction)
 
     def dropEvent(self, e):  # noqa: N802 - Part of QT signature.
         global selected_button
@@ -103,9 +119,10 @@ class DraggableButton(QtWidgets.QToolButton):
                 file_name = e.mimeData().urls()[0].toLocalFile()
                 self.api.set_button_icon(serial_number, page, self.index, file_name)
 
-        icon = self.api.get_button_icon_pixmap(serial_number, page, e.source().index)
-        if icon:
-            e.source().setIcon(icon)
+        if e.source():
+            icon = self.api.get_button_icon_pixmap(serial_number, page, e.source().index)
+            if icon:
+                e.source().setIcon(icon)
 
         icon = self.api.get_button_icon_pixmap(serial_number, page, self.index)
         if icon:
@@ -134,14 +151,13 @@ def _replace_special_keys(key):
 
 
 def handle_keypress(ui, deck_id: str, key: int, state: bool) -> None:
-
     # TODO: Handle both key down and key up events in future.
     if state:
-
         if api.reset_dimmer(deck_id):
             return
 
-        kb = Controller()
+        if pnput_supported:
+            kb = Controller()
         page = api.get_page(deck_id)
 
         command = api.get_button_command(deck_id, page, key)
@@ -151,61 +167,63 @@ def handle_keypress(ui, deck_id: str, key: int, state: bool) -> None:
             except Exception as error:
                 print(f"The command '{command}' failed: {error}")
 
-        keys = api.get_button_keys(deck_id, page, key)
-        if keys:
-            keys = keys.strip().replace(" ", "")
-            for section in keys.split(","):
-                # Since + and , are used to delimit our section and keys to press,
-                # they need to be substituted with keywords.
-                section_keys = [_replace_special_keys(key_name) for key_name in section.split("+")]
+        if pnput_supported:
+            keys = api.get_button_keys(deck_id, page, key)
+            if keys:
+                keys = keys.strip().replace(" ", "")
+                for section in keys.split(","):
+                    # Since + and , are used to delimit our section and keys to press,
+                    # they need to be substituted with keywords.
+                    section_keys = [_replace_special_keys(key_name) for key_name in section.split("+")]
 
-                # Translate string to enum, or just the string itself if not found
-                section_keys = [getattr(Key, key_name.lower(), key_name) for key_name in section_keys]
+                    # Translate string to enum, or just the string itself if not found
+                    section_keys = [getattr(Key, key_name.lower(), key_name) for key_name in section_keys]
 
-                for key_name in section_keys:
-                    if isinstance(key_name, str) and key_name.startswith("delay"):
-                        sleep_time_arg = key_name.split("delay", 1)[1]
-                        if sleep_time_arg:
-                            try:
-                                sleep_time = float(sleep_time_arg)
-                            except Exception:
-                                print(f"Could not convert sleep time to float '{sleep_time_arg}'")
-                                sleep_time = 0
+                    for key_name in section_keys:
+                        if isinstance(key_name, str) and key_name.startswith("delay"):
+                            sleep_time_arg = key_name.split("delay", 1)[1]
+                            if sleep_time_arg:
+                                try:
+                                    sleep_time = float(sleep_time_arg)
+                                except Exception:
+                                    print(f"Could not convert sleep time to float '{sleep_time_arg}'")
+                                    sleep_time = 0
+                            else:
+                                # default if not specified
+                                sleep_time = 0.5
+
+                            if sleep_time:
+                                try:
+                                    time.sleep(sleep_time)
+                                except Exception:
+                                    print(f"Could not sleep with provided sleep time '{sleep_time}'")
                         else:
-                            # default if not specified
-                            sleep_time = 0.5
-
-                        if sleep_time:
                             try:
-                                time.sleep(sleep_time)
+                                if isinstance(key_name, str) and key_name.lower().startswith("0x"):
+                                    kb.press(keyboard.KeyCode(int(key_name, 16)))
+                                else:
+                                    kb.press(key_name)
+
                             except Exception:
-                                print(f"Could not sleep with provided sleep time '{sleep_time}'")
-                    else:
-                        try:
-                            if isinstance(key_name, str) and key_name.lower().startswith("0x"):
-                                kb.press(keyboard.KeyCode(int(key_name, 16)))
-                            else:
-                                kb.press(key_name)
+                                print(f"Could not press key '{key_name}'")
 
-                        except Exception:
-                            print(f"Could not press key '{key_name}'")
+                    for key_name in section_keys:
+                        if not (isinstance(key_name, str) and key_name.startswith("delay")):
+                            try:
+                                if isinstance(key_name, str) and key_name.lower().startswith("0x"):
+                                    kb.release(keyboard.KeyCode(int(key_name, 16)))
+                                else:
+                                    kb.release(key_name)
+                            except Exception:
+                                print(f"Could not release key '{key_name}'")
 
-                for key_name in section_keys:
-                    if not (isinstance(key_name, str) and key_name.startswith("delay")):
-                        try:
-                            if isinstance(key_name, str) and key_name.lower().startswith("0x"):
-                                kb.release(keyboard.KeyCode(int(key_name, 16)))
-                            else:
-                                kb.release(key_name)
-                        except Exception:
-                            print(f"Could not release key '{key_name}'")
-
-        write = api.get_button_write(deck_id, page, key)
-        if write:
-            try:
-                kb.type(write)
-            except Exception as error:
-                print(f"Could not complete the write command: {error}")
+        if pnput_supported:
+            write = api.get_button_write(deck_id, page, key)
+            if write:
+                try:
+                    kb.type(write)
+                except Exception as error:
+                    print(f"Could not complete the write command: {error}")
 
         brightness_change = api.get_button_change_brightness(deck_id, page, key)
         if brightness_change:
@@ -241,8 +259,8 @@ def update_button_text(ui, text: str) -> None:
         deck_id = _deck_id(ui)
         if deck_id:
             # There may be no decks attached
-            api.set_button_text(deck_id, _page(ui), selected_button.index, text)
-            icon = api.get_button_icon_pixmap(deck_id, _page(ui), selected_button.index)
+            api.set_button_text(deck_id, _page(ui), selected_button.index, text)  # type: ignore # Index property added
+            icon = api.get_button_icon_pixmap(deck_id, _page(ui), selected_button.index)  # type: ignore # Index property added
             if icon:
                 selected_button.setIcon(icon)
 
@@ -250,31 +268,31 @@ def update_button_text(ui, text: str) -> None:
 def update_button_command(ui, command: str) -> None:
     if selected_button:
         deck_id = _deck_id(ui)
-        api.set_button_command(deck_id, _page(ui), selected_button.index, command)
+        api.set_button_command(deck_id, _page(ui), selected_button.index, command)  # type: ignore # Index property added
 
 
 def update_button_keys(ui, keys: str) -> None:
     if selected_button:
         deck_id = _deck_id(ui)
-        api.set_button_keys(deck_id, _page(ui), selected_button.index, keys)
+        api.set_button_keys(deck_id, _page(ui), selected_button.index, keys)  # type: ignore # Index property added
 
 
 def update_button_write(ui) -> None:
     if selected_button:
         deck_id = _deck_id(ui)
-        api.set_button_write(deck_id, _page(ui), selected_button.index, ui.write.toPlainText())
+        api.set_button_write(deck_id, _page(ui), selected_button.index, ui.write.toPlainText())  # type: ignore # Index property added
 
 
 def update_change_brightness(ui, amount: int) -> None:
     if selected_button:
         deck_id = _deck_id(ui)
-        api.set_button_change_brightness(deck_id, _page(ui), selected_button.index, amount)
+        api.set_button_change_brightness(deck_id, _page(ui), selected_button.index, amount)  # type: ignore # Index property added
 
 
 def update_switch_page(ui, page: int) -> None:
     if selected_button:
         deck_id = _deck_id(ui)
-        api.set_button_switch_page(deck_id, _page(ui), selected_button.index, page)
+        api.set_button_switch_page(deck_id, _page(ui), selected_button.index, page)  # type: ignore # Index property added
 
 
 def change_page(ui, page: int) -> None:
@@ -343,10 +361,10 @@ def remove_image(window) -> None:
         confirm = QMessageBox(window)
         confirm.setWindowTitle("Remove image")
         confirm.setText("Are you sure you want to remove the image for this button?")
-        confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        confirm.setIcon(QMessageBox.Question)
-        button = confirm.exec_()
-        if button == QMessageBox.Yes:
+        confirm.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        confirm.setIcon(QMessageBox.Icon.Question)
+        button = confirm.exec()
+        if button == QMessageBox.StandardButton.Yes:
             api.set_button_icon(deck_id, _page(window.ui), selected_button.index, "")  # type: ignore # Index property added
             redraw_buttons(window.ui)
 
@@ -370,11 +388,9 @@ def set_brightness(ui, value: int) -> None:
     api.set_brightness(deck_id, value)
 
 
-def set_brightness_dimmed(ui, value: int, full_brightness: int) -> None:
+def set_brightness_dimmed(ui, value: int) -> None:
     deck_id = _deck_id(ui)
-    # TODO: Verify this is correct. Looks like it was a bug in the MR
-    api.set_brightness_dimmed(deck_id, int(full_brightness * (value / 100)))
-    # dimmers[deck_id].brightness_dimmed = int(full_brightness * (value / 100))
+    api.set_brightness_dimmed(deck_id, value)
     api.reset_dimmer(deck_id)
 
 
@@ -413,6 +429,10 @@ def enable_button_configuration(ui, enabled: bool):
     ui.imageButton.setEnabled(enabled)
     ui.removeButton.setEnabled(enabled)
     ui.textButton.setEnabled(enabled)
+    ui.label_5.setVisible(pnput_supported)
+    ui.keys.setVisible(pnput_supported)
+    ui.label_6.setVisible(pnput_supported)
+    ui.write.setVisible(pnput_supported)
 
 
 def reset_button_configuration(ui):
@@ -429,7 +449,7 @@ def reset_button_configuration(ui):
 
 
 def browse_documentation():
-    url = QUrl("https://github.com/timothycrosley/streamdeck-ui#readme")
+    url = QUrl("https://timothycrosley.github.io/streamdeck-ui/")
     QDesktopServices.openUrl(url)
 
 
@@ -486,8 +506,8 @@ def build_buttons(ui, tab) -> None:
             button = DraggableButton(base_widget, ui, api)
             button.setCheckable(True)
             button.index = index
-            button.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
-            button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            button.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.MinimumExpanding)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             button.setIconSize(QSize(80, 80))
             button.setStyleSheet(BUTTON_STYLE)
             buttons.append(button)
@@ -600,7 +620,7 @@ class MainWindow(QMainWindow):
         description = "A Linux compatible UI for the Elgato Stream Deck."
         app = QApplication.instance()
         body = [description, "Version {}\n".format(app.applicationVersion())]
-        dependencies = ("streamdeck", "pyside2", "pillow", "pynput")
+        dependencies = ("streamdeck", "pyside6", "pillow", "pynput")
         for dep in dependencies:
             try:
                 dist = pkg_resources.get_distribution(dep)
@@ -629,7 +649,7 @@ def queue_update_button_text(ui, text: str) -> None:
 
     text_update_timer = QTimer()
     text_update_timer.setSingleShot(True)
-    text_update_timer.timeout.connect(partial(update_button_text, ui, text))
+    text_update_timer.timeout.connect(partial(update_button_text, ui, text))  # type: ignore [attr-defined]
     text_update_timer.start(500)
 
 
@@ -675,13 +695,13 @@ def show_settings(window: MainWindow) -> None:
     settings.ui.brightness.setValue(api.get_brightness(deck_id))
     settings.ui.brightness.valueChanged.connect(partial(change_brightness, deck_id))
     settings.ui.dim.currentIndexChanged.connect(partial(disable_dim_settings, settings))
-    if settings.exec_():
+    if settings.exec():
         # Commit changes
         if existing_index != settings.ui.dim.currentIndex():
             # dimmers[deck_id].timeout = settings.ui.dim.currentData()
             api.set_display_timeout(deck_id, settings.ui.dim.currentData())
         set_brightness(window.ui, settings.ui.brightness.value())
-        set_brightness_dimmed(window.ui, settings.ui.brightness_dimmed.value(), settings.ui.brightness.value())
+        set_brightness_dimmed(window.ui, settings.ui.brightness_dimmed.value())
     else:
         # User cancelled, reset to original brightness
         change_brightness(deck_id, api.get_brightness(deck_id))
@@ -732,7 +752,7 @@ def create_main_window(logo: QIcon, app: QApplication) -> MainWindow:
     return main_window
 
 
-def create_tray(logo: QIcon, app: QApplication, main_window: QMainWindow) -> QSystemTrayIcon:
+def create_tray(logo: QIcon, app: QApplication, main_window: MainWindow) -> QSystemTrayIcon:
     """Creates a system tray with the provided icon and parent. The main
     window passed will be activated when clicked.
 
@@ -746,18 +766,18 @@ def create_tray(logo: QIcon, app: QApplication, main_window: QMainWindow) -> QSy
     :rtype: QSystemTrayIcon
     """
     tray = QSystemTrayIcon(logo, app)
-    tray.activated.connect(main_window.systray_clicked)
+    tray.activated.connect(main_window.systray_clicked)  # type: ignore [attr-defined]
 
     menu = QMenu()
     action_dim = QAction("Dim display (toggle)", main_window)
-    action_dim.triggered.connect(toggle_dim_all)
+    action_dim.triggered.connect(toggle_dim_all)  # type: ignore [attr-defined]
     action_configure = QAction("Configure...", main_window)
-    action_configure.triggered.connect(main_window.bring_to_top)
+    action_configure.triggered.connect(main_window.bring_to_top)  # type: ignore [attr-defined]
     menu.addAction(action_dim)
     menu.addAction(action_configure)
     menu.addSeparator()
     action_exit = QAction("Exit", main_window)
-    action_exit.triggered.connect(app.exit)
+    action_exit.triggered.connect(app.exit)  # type: ignore [attr-defined]
     menu.addAction(action_exit)
     tray.setContextMenu(menu)
     return tray
@@ -765,7 +785,7 @@ def create_tray(logo: QIcon, app: QApplication, main_window: QMainWindow) -> QSy
 
 def streamdeck_cpu_changed(ui, serial_number: str, cpu: int):
     if cpu > 100:
-        cpu == 100
+        cpu = 100
     if _deck_id(ui) == serial_number:
         ui.cpu_usage.setValue(cpu)
         ui.cpu_usage.setToolTip(f"Rendering CPU usage: {cpu}%")
@@ -773,7 +793,6 @@ def streamdeck_cpu_changed(ui, serial_number: str, cpu: int):
 
 
 def streamdeck_attached(ui, deck: Dict):
-
     serial_number = deck["serial_number"]
     blocker = QSignalBlocker(ui.device_list)
     try:
@@ -783,17 +802,30 @@ def streamdeck_attached(ui, deck: Dict):
     build_device(ui)
 
 
-def streamdeck_detatched(ui, serial_number):
+def streamdeck_detached(ui, serial_number):
     index = ui.device_list.findData(serial_number)
     if index != -1:
         # Should not be (how can you remove a device that was never attached?)
         # Check anyways
         blocker = QSignalBlocker(ui.device_list)
         try:
-             ui.device_list.removeItem(index)
+            ui.device_list.removeItem(index)
         finally:
             blocker.unblock()
         build_device(ui)
+
+
+def sigterm_handler(api, app, signal_value, frame):
+    api.stop()
+    app.quit()
+    if signal_value == signal.SIGTERM:
+        # Indicate to systemd that it was a clean termination
+        print("Exiting normally")
+        sys.exit()
+    else:
+        # Terminations for other reasons are treated as an error condition
+        sys.exit(1)
+
 
 def start(_exit: bool = False) -> None:
     global api
@@ -812,41 +844,61 @@ def start(_exit: bool = False) -> None:
     except pkg_resources.DistributionNotFound:
         version = "devel"
 
-    api = StreamDeckServer()
-    if os.path.isfile(STATE_FILE):
-        api.open_config(STATE_FILE)
+    try:
+        with Semaphore("/tmp/streamdeck_ui.lock"):  # nosec - this file is only observed with advisory lock
+            # The semaphore was created, so this is the first instance
 
-    # The QApplication object holds the Qt event loop and you need one of these
-    # for your application
-    app = QApplication(sys.argv)
-    app.setApplicationName("Streamdeck UI")
-    app.setApplicationVersion(version)
-    logo = QIcon(LOGO)
-    app.setWindowIcon(logo)
-    main_window = create_main_window(logo, app)
-    ui = main_window.ui
-    tray = create_tray(logo, app, main_window)
+            api = StreamDeckServer()
+            if os.path.isfile(STATE_FILE):
+                api.open_config(STATE_FILE)
 
-    api.streamdeck_keys.key_pressed.connect(partial(handle_keypress, ui))
+            # The QApplication object holds the Qt event loop and you need one of these
+            # for your application
+            app = QApplication(sys.argv)
+            app.setApplicationName("Streamdeck UI")
+            app.setApplicationVersion(version)
+            logo = QIcon(LOGO)
+            app.setWindowIcon(logo)
+            main_window = create_main_window(logo, app)
+            ui = main_window.ui
+            tray = create_tray(logo, app, main_window)
 
-    ui.device_list.currentIndexChanged.connect(partial(build_device, ui))
-    ui.pages.currentChanged.connect(partial(change_page, ui))
+            api.streamdeck_keys.key_pressed.connect(partial(handle_keypress, ui))
 
-    api.plugevents.attached.connect(partial(streamdeck_attached, ui))
-    api.plugevents.detatched.connect(partial(streamdeck_detatched, ui))
-    api.plugevents.cpu_changed.connect(partial(streamdeck_cpu_changed, ui))
+            ui.device_list.currentIndexChanged.connect(partial(build_device, ui))
+            ui.pages.currentChanged.connect(partial(change_page, ui))
 
-    api.start()
+            api.plugevents.attached.connect(partial(streamdeck_attached, ui))
+            api.plugevents.detached.connect(partial(streamdeck_detached, ui))
+            api.plugevents.cpu_changed.connect(partial(streamdeck_cpu_changed, ui))
 
-    tray.show()
-    if show_ui:
-        main_window.show()
+            api.start()
 
-    if _exit:
-        return
-    else:
-        app.exec_()
-        api.stop()
+            # Configure signal hanlders
+            # https://stackoverflow.com/a/4939113/192815
+            timer = QTimer()
+            timer.start(500)
+            timer.timeout.connect(lambda: None)  # type: ignore [attr-defined] # Let interpreter run to handle signal
+
+            # Handle SIGTERM so we release semaphore and shutdown API gracefully
+            signal.signal(signal.SIGTERM, partial(sigterm_handler, api, app))
+
+            # Handle <ctrl+c>
+            signal.signal(signal.SIGINT, partial(sigterm_handler, api, app))
+
+            tray.show()
+            if show_ui:
+                main_window.show()
+
+            if _exit:
+                return
+            else:
+                app.exec()
+                api.stop()
+                sys.exit()
+
+    except SemaphoreAcquireError:
+        # The semaphore already exists, so another instance is running
         sys.exit()
 
 

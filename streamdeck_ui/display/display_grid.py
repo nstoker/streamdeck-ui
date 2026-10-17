@@ -4,6 +4,7 @@ from typing import Callable, Dict, List, Optional
 
 from PIL import Image
 from StreamDeck.Devices.StreamDeck import StreamDeck
+from StreamDeck.Devices.StreamDeckOriginal import StreamDeckOriginal
 from StreamDeck.ImageHelpers import PILHelper
 from StreamDeck.Transport.Transport import TransportError
 
@@ -41,7 +42,11 @@ class DisplayGrid:
         self.streamdeck = streamdeck
         # Reference to the actual device, used to update icons
 
-        self.size = streamdeck.key_image_format()["size"]
+        if streamdeck.is_visual():
+            self.size = streamdeck.key_image_format()["size"]
+        else:
+            self.size = (StreamDeckOriginal.KEY_PIXEL_WIDTH, StreamDeckOriginal.KEY_PIXEL_HEIGHT)
+            # Default to original stream deck size - even though we're not actually going to display anything
         self.serial_number = streamdeck.get_serial_number()
 
         self.pages: Dict[int, Dict[int, Pipeline]] = {}
@@ -80,7 +85,7 @@ class DisplayGrid:
 
     def get_image(self, page: int, button: int) -> Image.Image:
         with self.lock:
-            # REVIEW: Consider returning not the last result, but an thumbnail
+            # REVIEW: Consider returning not the last result, but a thumbnail
             # or something that represents the current "static" look of
             # a button. This will need to be added to the interface
             # of a filter.
@@ -125,7 +130,6 @@ class DisplayGrid:
             pipeline_cache_count = 0
 
             for button, pipeline in page.items():
-
                 # Process all the steps in the pipeline and return the resulting image
                 with self.lock:
                     image, hashcode = pipeline.execute(current_time)
@@ -156,21 +160,22 @@ class DisplayGrid:
                     # used to cache the output. At the end of the pipeline the hash can
                     # be checked and final bytes will be ready to pipe to the device.
 
-                    # FIXME: This will be unbounded, old frames will need to be evicted
-                    if hashcode not in frame_cache:
-                        image = PILHelper.to_native_format(self.streamdeck, image)
-                        frame_cache[hashcode] = image
-                    else:
-                        image = frame_cache[hashcode]
+                    if self.streamdeck.is_visual():
+                        # FIXME: This will be unbounded, old frames will need to be evicted
+                        if hashcode not in frame_cache:
+                            image = PILHelper.to_native_format(self.streamdeck, image)
+                            frame_cache[hashcode] = image
+                        else:
+                            image = frame_cache[hashcode]
 
-                    try:
-                        with self.lock:
-                            self.streamdeck.set_key_image(button, image)
-                    except TransportError:
-                        # Review - deadlock if you wait on yourself?
-                        self.stop()
-                        pass
-                        return
+                        try:
+                            with self.lock:
+                                self.streamdeck.set_key_image(button, image)
+                        except TransportError:
+                            # Review - deadlock if you wait on yourself?
+                            self.stop()
+                            pass
+                            return
 
             self.sync.set()
             self.sync.clear()
